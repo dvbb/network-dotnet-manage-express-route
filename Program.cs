@@ -1,18 +1,20 @@
 ﻿// Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License. See License.txt in the project root for license information.
-using System;
-using Microsoft.Azure.Management.Fluent;
-using Microsoft.Azure.Management.Network.Fluent;
-using Microsoft.Azure.Management.Network.Fluent.Models;
-using Microsoft.Azure.Management.ResourceManager.Fluent;
-using Microsoft.Azure.Management.ResourceManager.Fluent.Core;
-using Microsoft.Azure.Management.Samples.Common;
+
+using Azure;
+using Azure.Core;
+using Azure.Identity;
+using Azure.ResourceManager.Samples.Common;
+using Azure.ResourceManager.Resources;
+using Azure.ResourceManager;
+using Azure.ResourceManager.Network;
+using Azure.ResourceManager.Network.Models;
 
 namespace ManageExpressRoute
 {
     public class Program
     {
-        private static readonly Region region = Region.USWestCentral;
+        private static ResourceIdentifier? _resourceGroupId = null;
 
         /**
         * Azure Network sample for managing express route circuits.
@@ -23,16 +25,28 @@ namespace ManageExpressRoute
          *  - Create virtual network gateway
          *  - Create virtual network gateway connection
         */
-        public static void RunSample(IAzure azure)
+        public static async Task RunSample(ArmClient client)
         {
-            string rgName = SdkContext.RandomResourceName("rg", 20);
-            string ercName = SdkContext.RandomResourceName("erc", 20);
-            string vnetName = SdkContext.RandomResourceName("vnet", 20);
-            string gatewayName = SdkContext.RandomResourceName("gtw", 20);
-            string connectionName = SdkContext.RandomResourceName("con", 20);
+            string rgName = Utilities.CreateRandomName("NetworkSampleRG");
+            string ercName = Utilities.CreateRandomName("erc");
+            string vnetName = Utilities.CreateRandomName("vnet");
+            string pipName = Utilities.CreateRandomName("pip");
+            string gatewayName = Utilities.CreateRandomName("gateway");
+            string connectionName = Utilities.CreateRandomName("con");
 
             try
             {
+                // Get default subscription
+                SubscriptionResource subscription = await client.GetDefaultSubscriptionAsync();
+
+                // Create a resource group in the EastUS region
+                Utilities.Log($"Creating resource group...");
+                ArmOperation<ResourceGroupResource> rgLro = await subscription.GetResourceGroups().CreateOrUpdateAsync(WaitUntil.Completed, rgName, new ResourceGroupData(AzureLocation.EastUS));
+                ResourceGroupResource resourceGroup = rgLro.Value;
+                _resourceGroupId = resourceGroup.Id;
+                Utilities.Log("Created a resource group with name: " + resourceGroup.Data.Name);
+
+
                 //============================================================
                 // create Express Route Circuit
                 Utilities.Log("Creating express route circuit...");
@@ -44,7 +58,7 @@ namespace ManageExpressRoute
                     .WithBandwidthInMbps(50)
                     .WithSku(ExpressRouteCircuitSkuType.PremiumMeteredData)
                     .Create();
-                Utilities.Log("Created express route circuit");
+                Utilities.Log($"Created express route circuit: {}");
 
                 //============================================================
                 // Create Express Route circuit peering. Please note: express route circuit should be provisioned by connectivity provider before this step.
@@ -66,25 +80,59 @@ namespace ManageExpressRoute
                 //============================================================
                 // Create virtual network to be associated with virtual network gateway
                 Utilities.Log("Creating virtual network...");
-                INetwork network = azure.Networks.Define(vnetName)
-                    .WithRegion(region)
-                    .WithExistingResourceGroup(rgName)
-                    .WithAddressSpace("192.168.0.0/16")
-                    .WithSubnet("GatewaySubnet", "192.168.200.0/26")
-                    .WithSubnet("FrontEnd", "192.168.1.0/24")
-                    .Create();
+                VirtualNetworkData vnetInput = new VirtualNetworkData()
+                {
+                    Location = resourceGroup.Data.Location,
+                    AddressPrefixes = { "192.168.0.0/16" },
+                    Subnets =
+                    {
+                        new SubnetData() { AddressPrefix = "192.168.200.0/26", Name = "GatewaySubnet" },
+                        new SubnetData() { AddressPrefix = "192.168.1.0/24", Name = "FrontEnd" }
+                    },
+                };
+                var vnetLro = await resourceGroup.GetVirtualNetworks().CreateOrUpdateAsync(WaitUntil.Completed, vnetName, vnetInput);
+                VirtualNetworkResource vnet = vnetLro.Value;
+                Utilities.Log($"Created a virtual network: {vnet.Data.Name}");
 
                 //============================================================
+                // Create public ip for virtual network gateway
+                var pip = await Utilities.CreatePublicIP(resourceGroup, pipName);
+
                 // Create virtual network gateway
                 Utilities.Log("Creating virtual network gateway...");
-                IVirtualNetworkGateway vngw1 = azure.VirtualNetworkGateways.Define(gatewayName)
-                    .WithRegion(region)
-                    .WithNewResourceGroup(rgName)
-                    .WithExistingNetwork(network)
-                    .WithExpressRoute()
-                    .WithSku(VirtualNetworkGatewaySkuName.Standard)
-                    .Create();
-                Utilities.Log("Created virtual network gateway");
+                //IVirtualNetworkGateway vngw1 = azure.VirtualNetworkGateways.Define(gatewayName)
+                //    .WithRegion(region)
+                //    .WithNewResourceGroup(rgName)
+                //    .WithExistingNetwork(network)
+                //    .WithExpressRoute()
+                //    .WithSku(VirtualNetworkGatewaySkuName.Standard)
+                //    .Create();
+                VirtualNetworkGatewayData vpnGatewayInput = new VirtualNetworkGatewayData()
+                {
+                    Location = resourceGroup.Data.Location,
+                    Sku = new VirtualNetworkGatewaySku()
+                    {
+                        Name = VirtualNetworkGatewaySkuName.Basic,
+                        Tier = VirtualNetworkGatewaySkuTier.Basic
+                    },
+                    Tags = { { "key", "value" } },
+                    EnableBgp = false,
+                    GatewayType = VirtualNetworkGatewayType.Vpn,
+                    VpnType = VpnType.RouteBased,
+                    IPConfigurations =
+                    {
+                        new VirtualNetworkGatewayIPConfiguration()
+                        {
+                            Name = Utilities.CreateRandomName("config"),
+                            PrivateIPAllocationMethod = NetworkIPAllocationMethod.Dynamic,
+                            PublicIPAddressId  = pip.Data.Id,
+                            SubnetId = vnet.Data.Subnets.First(item => item.Name == "GatewaySubnet").Id,
+                        }
+                    },
+                };
+                var vpnGatewayLro = await resourceGroup.GetVirtualNetworkGateways().CreateOrUpdateAsync(WaitUntil.Completed, vpnGatewayName, vpnGatewayInput);
+                VirtualNetworkGatewayResource vpnGateway = vpnGatewayLro.Value;
+                Utilities.Log($"Created virtual network gateway: {vpnGateway.Data.Name}");
 
                 //============================================================
                 // Create virtual network gateway connection
@@ -100,8 +148,12 @@ namespace ManageExpressRoute
             {
                 try
                 {
-                    Utilities.Log("Deleting Resource Group: " + rgName);
-                    azure.ResourceGroups.BeginDeleteByName(rgName);
+                    if (_resourceGroupId is not null)
+                    {
+                        Utilities.Log($"Deleting Resource Group...");
+                        await client.GetResourceGroupResource(_resourceGroupId).DeleteAsync(WaitUntil.Completed);
+                        Utilities.Log($"Deleted Resource Group: {_resourceGroupId.Name}");
+                    }
                 }
                 catch (NullReferenceException)
                 {
@@ -114,24 +166,23 @@ namespace ManageExpressRoute
             }
         }
 
-        public static void Main(string[] args)
+        public static async Task Main(string[] args)
         {
+            //=================================================================
+            // Authenticate
+            var clientId = Environment.GetEnvironmentVariable("CLIENT_ID");
+            var clientSecret = Environment.GetEnvironmentVariable("CLIENT_SECRET");
+            var tenantId = Environment.GetEnvironmentVariable("TENANT_ID");
+            var subscription = Environment.GetEnvironmentVariable("SUBSCRIPTION_ID");
+            ClientSecretCredential credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
+            ArmClient client = new ArmClient(credential, subscription);
+
+            await RunSample(client);
             try
             {
                 //=================================================================
                 // Authenticate
-                var credentials =
-                    SdkContext.AzureCredentialsFactory.FromFile(
-                        Environment.GetEnvironmentVariable("AZURE_AUTH_LOCATION"));
 
-                var azure = Azure.Configure()
-                    .WithLogLevel(HttpLoggingDelegatingHandler.Level.Basic)
-                    .Authenticate(credentials)
-                    .WithDefaultSubscription();
-
-                // Print selected subscription
-                Utilities.Log("Selected subscription: " + azure.SubscriptionId);
-                RunSample(azure);
             }
             catch (Exception ex)
             {
