@@ -34,7 +34,6 @@ namespace ManageExpressRoute
             string gatewayName = Utilities.CreateRandomName("gateway");
             string connectionName = Utilities.CreateRandomName("con");
 
-            try
             {
                 // Get default subscription
                 SubscriptionResource subscription = await client.GetDefaultSubscriptionAsync();
@@ -46,36 +45,71 @@ namespace ManageExpressRoute
                 _resourceGroupId = resourceGroup.Id;
                 Utilities.Log("Created a resource group with name: " + resourceGroup.Data.Name);
 
-
                 //============================================================
                 // create Express Route Circuit
                 Utilities.Log("Creating express route circuit...");
-                IExpressRouteCircuit erc = azure.ExpressRouteCircuits.Define(ercName)
-                    .WithRegion(region)
-                    .WithNewResourceGroup(rgName)
-                    .WithServiceProvider("Equinix")
-                    .WithPeeringLocation("Silicon Valley")
-                    .WithBandwidthInMbps(50)
-                    .WithSku(ExpressRouteCircuitSkuType.PremiumMeteredData)
-                    .Create();
-                Utilities.Log($"Created express route circuit: {}");
+                //IExpressRouteCircuit erc = azure.ExpressRouteCircuits.Define(ercName)
+                //    .WithRegion(region)
+                //    .WithNewResourceGroup(rgName)
+                //    .WithServiceProvider("Equinix")
+                //    .WithPeeringLocation("Silicon Valley")
+                //    .WithBandwidthInMbps(50)
+                //    .WithSku(ExpressRouteCircuitSkuType.PremiumMeteredData)
+                //    .Create();
+                ExpressRouteCircuitData circuitInput = new ExpressRouteCircuitData()
+                {
+                    Location = resourceGroup.Data.Location,
+                    Tags = { { "key", "value" } },
+                    Sku = new ExpressRouteCircuitSku
+                    {
+                        Name = "Premium_MeteredData",
+                        Tier = "Premium",
+                        Family = "MeteredData"
+                    },
+                    ServiceProviderProperties = new ExpressRouteCircuitServiceProviderProperties
+                    {
+                        BandwidthInMbps = Convert.ToInt32(200),
+                        PeeringLocation = "boydton 1 dc",
+                        ServiceProviderName = "bvtazureixp01"
+                    }
+                };
+                var ercLro = await resourceGroup.GetExpressRouteCircuits().CreateOrUpdateAsync(WaitUntil.Completed, ercName, circuitInput);
+                ExpressRouteCircuitResource erc = ercLro.Value;
+                Utilities.Log($"Created express route circuit: {erc.Data.Name}");
 
                 //============================================================
                 // Create Express Route circuit peering. Please note: express route circuit should be provisioned by connectivity provider before this step.
                 Utilities.Log("Creating express route circuit peering...");
-                erc.Peerings.DefineAzurePrivatePeering()
-                    .WithPrimaryPeerAddressPrefix("123.0.0.0/30")
-                    .WithSecondaryPeerAddressPrefix("123.0.0.4/30")
-                    .WithVlanId(200)
-                    .WithPeerAsn(100)
-                    .Create();
-                Utilities.Log("Created express route circuit peering");
+                //erc.Peerings.DefineAzurePrivatePeering()
+                //    .WithPrimaryPeerAddressPrefix("123.0.0.0/30")
+                //    .WithSecondaryPeerAddressPrefix("123.0.0.4/30")
+                //    .WithVlanId(200)
+                //    .WithPeerAsn(100)
+                //    .Create();
+                var peering = new ExpressRouteCircuitPeeringData()
+                {
+                    Name = ExpressRoutePeeringType.MicrosoftPeering.ToString(),
+                    PeeringType = ExpressRoutePeeringType.MicrosoftPeering,
+                    PeerASN = Convert.ToInt32(1000),
+                    VlanId = Convert.ToInt32(400),
+                    PrimaryPeerAddressPrefix = "199.168.200.0/30",
+                    SecondaryPeerAddressPrefix = "199.168.202.0/30",
+                    MicrosoftPeeringConfig = new ExpressRouteCircuitPeeringConfig()
+                    {
+                        AdvertisedPublicPrefixes = { "fc02::1/128" },
+                        LegacyMode = Convert.ToInt32(true)
+                    },
+                };
+                resourceGroup.GetExpressRouteCircuits();
+                var ercPeeringLro = await erc.GetExpressRouteCircuitPeerings().CreateOrUpdateAsync(WaitUntil.Completed, "MicrosoftPeering", peering);
+                ExpressRouteCircuitPeeringResource ercPeering = ercPeeringLro.Value;
+                Utilities.Log($"Created express route circuit peering: {ercPeering.Data.Name}");
 
                 //============================================================
                 // Adding authorization to express route circuit
-                erc.Update()
-                    .WithAuthorization("myAuthorization")
-                    .Apply();
+                //erc.Update()
+                //    .WithAuthorization("myAuthorization")
+                //    .Apply();
 
                 //============================================================
                 // Create virtual network to be associated with virtual network gateway
@@ -130,21 +164,20 @@ namespace ManageExpressRoute
                         }
                     },
                 };
-                var vpnGatewayLro = await resourceGroup.GetVirtualNetworkGateways().CreateOrUpdateAsync(WaitUntil.Completed, vpnGatewayName, vpnGatewayInput);
+                var vpnGatewayLro = await resourceGroup.GetVirtualNetworkGateways().CreateOrUpdateAsync(WaitUntil.Completed, gatewayName, vpnGatewayInput);
                 VirtualNetworkGatewayResource vpnGateway = vpnGatewayLro.Value;
                 Utilities.Log($"Created virtual network gateway: {vpnGateway.Data.Name}");
 
                 //============================================================
                 // Create virtual network gateway connection
-                Utilities.Log("Creating virtual network gateway connection...");
-                vngw1.Connections.Define(connectionName)
-                    .WithExpressRoute(erc)
-                    // Note: authorization key is required only in case express route circuit and virtual network gateway are in different subscriptions
-                    // .WithAuthorization(erc.Inner.Authorizations.First().AuthorizationKey)
-                    .Create();
-                Utilities.Log("Created virtual network gateway connection");
+                //Utilities.Log("Creating virtual network gateway connection...");
+                //vngw1.Connections.Define(connectionName)
+                //    .WithExpressRoute(erc)
+                //    // Note: authorization key is required only in case express route circuit and virtual network gateway are in different subscriptions
+                //    // .WithAuthorization(erc.Inner.Authorizations.First().AuthorizationKey)
+                //    .Create();
+                //Utilities.Log("Created virtual network gateway connection");
             }
-            finally
             {
                 try
                 {
